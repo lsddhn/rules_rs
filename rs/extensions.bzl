@@ -618,7 +618,7 @@ def _generate_hub_and_spokes(
                     if not select_matching_version(req, [locked_version]):
                         fail(("ERROR: Cargo.lock out of sync: %s requires %s %s but Cargo.lock has %s.\n\n" +
                               "If this is incorrect, please set `validate_lockfile = False` in `crate.from_cargo`\n" +
-                              "and file a bug at https://github.com/dzbarsky/rules_rs/issues/new") % (
+                              "and file a bug at https://github.com/hermeticbuild/rules_rs/issues/new") % (
                             package["name"],
                             dep_name,
                             req,

@@ -34,7 +34,7 @@ use_repo(
         name = "toml2json_" + name,
         executable = True,
         sha256 = sha256,
-        url = "https://github.com/dzbarsky/toml2json/releases/download/v0.0.23/toml2json_" + name + ext,
+        url = "https://github.com/hermeticbuild/toml2json/releases/download/v0.0.23/toml2json_" + name + ext,
     )
     for name, sha256, ext in [
         ("darwin_amd64", "3fad1d4314fec5074b635ba3e5b31d578e2539137a017092bf364672a3c9676a", ""),

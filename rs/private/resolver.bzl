@@ -192,4 +192,4 @@ def resolve(mctx, packages, feature_resolutions_by_fq_crate, cfg_attrs_by_triple
         dirty_package_indices = sorted(dirty_package_indices)
 
         if i == _MAX_ROUNDS:
-            fail("Resolution did not converge! This is likely a bug in rules_rs, please report it to github.com/dzbarsky/rules_rs")
+            fail("Resolution did not converge! This is likely a bug in rules_rs, please report it to github.com/hermeticbuild/rules_rs")

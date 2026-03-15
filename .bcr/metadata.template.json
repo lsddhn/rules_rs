@@ -1,5 +1,5 @@
 {
-  "homepage": "https://github.com/dzbarsky/rules_rs",
+  "homepage": "https://github.com/hermeticbuild/rules_rs",
   "maintainers": [
     {
       "name": "David Zbarsky",
@@ -7,7 +7,7 @@
       "github": "dzbarsky"
     }
   ],
-  "repository": ["github:dzbarsky/rules_rs"],
+  "repository": ["github:hermeticbuild/rules_rs"],
   "versions": [],
   "yanked_versions": {}
 }
