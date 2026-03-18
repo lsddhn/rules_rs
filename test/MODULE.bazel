@@ -201,6 +201,7 @@ crate.annotation(
 ### Fix -sys crates
 include("//:3rd_party/bzip2-sys/include.MODULE.bazel")
 include("//:3rd_party/glib-sys/include.MODULE.bazel")
+include("//:3rd_party/libssh2-sys/include.MODULE.bazel")
 include("//:3rd_party/lzma-sys/include.MODULE.bazel")
 include("//:3rd_party/zstd-sys/include.MODULE.bazel")
 
