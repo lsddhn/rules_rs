@@ -165,6 +165,38 @@ If you import `rules_rust` via this extension, existing `load("@rules_rust//..."
 Using this extension is STRONGLY ENCOURAGED because it carries fixes that improve Windows behavior, rust-analyzer integration, and related compatibility work.
 In addition, when using the `rules_rs` toolchains, loading the compilation rules from `@rules_rs` directly and using the extension is REQUIRED for toolchain resolution to work correctly, at least until https://github.com/bazelbuild/rules_rust/pull/3857 is accepted by rules_rust maintainers. See the Migration section for more info.
 
+### Overriding with your own `rules_rust` fork
+
+If you need to completely replace the pinned `rules_rust` with your own fork (rather than applying patches), you can use Bazel's `override_repo` to swap out the extension-created repo. Declare your fork as a `bazel_dep` with an `archive_override` or `local_path_override`, then use `override_repo` to tell the `rules_rs` extension to use it.
+
+```bzl
+bazel_dep(name = "rules_rs", version = "0.0.44")
+bazel_dep(name = "rules_rust", version = "0.68.1")
+
+# Bring in your rules_rust fork as a proper module dependency.
+archive_override(
+    module_name = "rules_rust",
+    integrity = "sha256-...",
+    strip_prefix = "rules_rust-<commit>",
+    urls = ["https://github.com/my-org/rules_rust/archive/<commit>.tar.gz"],
+)
+
+# Replace the rules_rs extension's pinned rules_rust with your fork.
+rules_rust_ext = use_extension("@rules_rs//rs/experimental:rules_rust.bzl", "rules_rust")
+override_repo(rules_rust_ext, rules_rust = "rules_rust")
+
+# Configure toolchains from your fork directly.
+rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
+rust.toolchain(
+    edition = "2024",
+    versions = ["1.92.0"],
+)
+use_repo(rust, "rust_toolchains")
+register_toolchains("@rust_toolchains//:all")
+```
+
+This approach ensures that both `rules_rs` internals and your own `@rules_rust` loads resolve to the same fork. Overriding with a version that does not include required patches from [hermeticbuild/rules_rust](https://github.com/hermeticbuild/rules_rust) may cause build failures.
+
 ## Import `rules_rust_prost` from `rules_rs`
 
 `rules_rs` also exports a `rules_rust_prost` module extension for the prost integration:
