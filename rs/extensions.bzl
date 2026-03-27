@@ -110,6 +110,93 @@ def _date(ctx, label):
     result = ctx.execute(["gdate", '+"%Y-%m-%d %H:%M:%S.%3N"'])
     print(label, result.stdout)
 
+def _exec_compatible_triples(platform_triples, platform_cfg_attrs_by_triple):
+    result = []
+    for triple in platform_triples:
+        cfg_attr = platform_cfg_attrs_by_triple.get(triple, {})
+        if cfg_attr.get("target_os", "") != "none":
+            result.append(triple)
+    return result
+
+def _compute_normal_reachable_triples_by_package_index(
+        resolver_packages,
+        feature_resolutions_by_fq_crate,
+        workspace_members,
+        platform_triples,
+        platform_cfg_attrs_by_triple,
+        hub_name):
+    reachable_by_package_index = {
+        resolver_package["feature_resolutions"].package_index: set()
+        for resolver_package in resolver_packages
+    }
+
+    resolver_package_by_label = {}
+    for resolver_package in resolver_packages:
+        resolver_fq = _fq_crate(resolver_package["name"], resolver_package["version"])
+        resolver_label = "@%s//:%s" % (hub_name, resolver_fq)
+        resolver_package_by_label[resolver_label] = resolver_package
+
+    for workspace_member in workspace_members:
+        workspace_member_fq = _fq_crate(workspace_member["name"], workspace_member["version"])
+        workspace_member_fr = feature_resolutions_by_fq_crate.get(workspace_member_fq)
+        if workspace_member_fr:
+            workspace_member_reachable = reachable_by_package_index.get(workspace_member_fr.package_index)
+            if workspace_member_reachable != None:
+                for workspace_member_triple in platform_triples:
+                    workspace_member_reachable.add(workspace_member_triple)
+
+    for reach_triple in platform_triples:
+        reach_cfg_attrs = platform_cfg_attrs_by_triple.get(reach_triple, {})
+        if reach_cfg_attrs.get("target_os", "") != "none":
+            continue
+
+        reach_visit_queue = []
+        for workspace_member in workspace_members:
+            workspace_member_fq = _fq_crate(workspace_member["name"], workspace_member["version"])
+            workspace_member_fr = feature_resolutions_by_fq_crate.get(workspace_member_fq)
+            if not workspace_member_fr:
+                continue
+
+            for workspace_dep in workspace_member_fr.possible_deps:
+                if workspace_dep.get("kind", "normal") != "normal":
+                    continue
+                if reach_triple not in workspace_dep.get("target", set()):
+                    continue
+                workspace_dep_label = workspace_dep.get("bazel_target")
+                if workspace_dep_label:
+                    reach_visit_queue.append(workspace_dep_label)
+
+        queue_drained = False
+        for _queue_round in range(100000):
+            if not reach_visit_queue:
+                queue_drained = True
+                break
+
+            reach_label = reach_visit_queue.pop()
+            resolver_package = resolver_package_by_label.get(reach_label)
+            if not resolver_package:
+                continue
+
+            resolver_package_index = resolver_package["feature_resolutions"].package_index
+            reachable_triples = reachable_by_package_index[resolver_package_index]
+            if reach_triple in reachable_triples:
+                continue
+            reachable_triples.add(reach_triple)
+
+            for resolver_dep in resolver_package["feature_resolutions"].possible_deps:
+                if resolver_dep.get("kind", "normal") != "normal":
+                    continue
+                if reach_triple not in resolver_dep.get("target", set()):
+                    continue
+                resolver_dep_label = resolver_dep.get("bazel_target")
+                if resolver_dep_label:
+                    reach_visit_queue.append(resolver_dep_label)
+
+        if not queue_drained and reach_visit_queue:
+            fail("Normal-dep reachability traversal exceeded iteration bound for triple %s" % reach_triple)
+
+    return reachable_by_package_index
+
 def _normalize_path(path):
     return path.replace("\\", "/")
 
@@ -586,6 +673,16 @@ def _generate_hub_and_spokes(
 
     _date(mctx, "set up resolutions")
 
+    exec_triples = _exec_compatible_triples(platform_triples, platform_cfg_attrs_by_triple)
+    normal_reachable_triples_by_package_index = _compute_normal_reachable_triples_by_package_index(
+        resolver_packages,
+        feature_resolutions_by_fq_crate,
+        workspace_members,
+        platform_triples,
+        platform_cfg_attrs_by_triple,
+        hub_name,
+    )
+
     workspace_fq_deps = _compute_workspace_fq_deps(workspace_members, resolver_versions_by_name)
 
     workspace_dep_versions_by_name = {}
@@ -600,6 +697,8 @@ def _generate_hub_and_spokes(
             mctx.watch(package["manifest_path"])
 
         fq_deps = workspace_fq_deps[package["name"]]
+        package_feature_resolutions = feature_resolutions_by_fq_crate[_fq_crate(package["name"], package["version"])]
+        package_normal_reachable_triples = normal_reachable_triples_by_package_index.get(package_feature_resolutions.package_index, set())
 
         for dep in package["dependencies"]:
             source = dep["source"]
@@ -648,9 +747,20 @@ def _generate_hub_and_spokes(
             match_info = _cfg_match_info_for_target(target, platform_cfg_attrs, cfg_match_cache)
 
             for triple in match_info.matches:
+                dep_kind = dep.get("kind", "normal")
+                if dep_kind == "normal":
+                    triple_cfg_attrs = platform_cfg_attrs_by_triple.get(triple, {})
+                    if triple_cfg_attrs.get("target_os", "") == "none" and triple not in package_normal_reachable_triples:
+                        continue
+
                 if not is_first_party_dep:
                     workspace_dep_labels_by_triple[triple].add(":" + dep_name)
-                feature_resolutions.features_enabled[triple].update(features)
+
+                if dep_kind == "build":
+                    for exec_triple in exec_triples:
+                        feature_resolutions.features_enabled[exec_triple].update(features)
+                else:
+                    feature_resolutions.features_enabled[triple].update(features)
 
     # Set initial set of features from annotations
     for crate, annotation_versions in annotations.items():
@@ -673,7 +783,15 @@ def _generate_hub_and_spokes(
 
     _date(mctx, "set up initial deps!")
 
-    resolve(mctx, resolver_packages, feature_resolutions_by_fq_crate, platform_cfg_attrs_by_triple, debug)
+    resolve(
+        mctx,
+        resolver_packages,
+        feature_resolutions_by_fq_crate,
+        platform_cfg_attrs_by_triple,
+        normal_reachable_triples_by_package_index,
+        exec_triples,
+        debug,
+    )
 
     # Validate that we aren't trying to enable any `dep:foo` features that were not even in the lockfile.
     for package in packages:
