@@ -207,9 +207,20 @@ def _target_has_feature(ctx, feature):
 def triple_to_cfg_attrs(triple):
     parts = triple.split("-")
     arch_part = _get(parts, 0, "")
-    vendor_part = _get(parts, 1, "unknown")
-    os_raw_part = _get(parts, 2, "none")
-    env_part = "-".join(parts[3:])
+
+    # Detect 3-part bare-metal triples: {arch}-none-{env}
+    # Examples: thumbv6m-none-eabi, thumbv7em-none-eabihf
+    # These omit the vendor field — "none" at position 1 is the OS, not vendor.
+    # Contrast with 4-part: riscv32imc-unknown-none-elf (vendor=unknown, os=none)
+    if len(parts) == 3 and _get(parts, 1, "") == "none":
+        vendor_part = "unknown"
+        os_raw_part = "none"
+        env_part = _get(parts, 2, "")
+    else:
+        vendor_part = _get(parts, 1, "unknown")
+        os_raw_part = _get(parts, 2, "none")
+        env_part = "-".join(parts[3:])
+
     os_norm = _normalize_os(os_raw_part)
     fam = _family_for_os(os_norm)
     width = _pointer_width_for_arch(arch_part)
