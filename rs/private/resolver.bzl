@@ -30,7 +30,14 @@ def _dep_target_matches_triple(dep, triple, package_feature_set, cfg_attrs_by_tr
         features = package_feature_set,
     ).matches)
 
-def _resolve_one_round(packages, dirty_package_indices, cfg_attrs_by_triple, debug):
+def _is_exec_compatible_triple(triple, cfg_attrs_by_triple):
+    """Returns True if a triple can execute build scripts (i.e., is a hosted platform, not bare-metal)."""
+    cfg_attr = cfg_attrs_by_triple.get(triple)
+    if not cfg_attr:
+        return True
+    return cfg_attr.get("target_os", "") != "none"
+
+def _resolve_one_round(packages, dirty_package_indices, cfg_attrs_by_triple, normal_reachable_triples_by_package_index, exec_triples, debug):
     new_dirty_package_indices = set()
 
     for index in dirty_package_indices:
@@ -39,7 +46,7 @@ def _resolve_one_round(packages, dirty_package_indices, cfg_attrs_by_triple, deb
 
         feature_resolutions = package["feature_resolutions"]
         features_enabled = feature_resolutions.features_enabled
-
+        package_normal_reachable_triples = normal_reachable_triples_by_package_index.get(index, set())
         deps = feature_resolutions.deps
 
         if _propagate_feature_enablement(
@@ -49,6 +56,8 @@ def _resolve_one_round(packages, dirty_package_indices, cfg_attrs_by_triple, deb
             features_enabled,
             feature_resolutions,
             cfg_attrs_by_triple,
+            package_normal_reachable_triples,
+            exec_triples,
             debug,
         ):
             package_changed = True
@@ -77,8 +86,11 @@ def _resolve_one_round(packages, dirty_package_indices, cfg_attrs_by_triple, deb
             else:
                 match = dep["target"]
 
-            to_remove = None
             for triple in match:
+                if kind == "normal" and not _is_exec_compatible_triple(triple, cfg_attrs_by_triple):
+                    if triple not in package_normal_reachable_triples:
+                        continue
+
                 if optional:
                     features_for_triple = features_enabled[triple]
                     if dep_name not in features_for_triple and prefixed_dep_alias not in features_for_triple:
@@ -92,23 +104,18 @@ def _resolve_one_round(packages, dirty_package_indices, cfg_attrs_by_triple, deb
                 if has_alias:
                     feature_resolutions.aliases[bazel_target] = dep_name.replace("-", "_")
 
-                triple_features = dep_feature_resolutions.features_enabled[triple]
-
                 dep_features = dep.get("features")
                 if dep_features:
-                    prev_length = len(triple_features)
-                    triple_features.update(dep_features)
-                    if prev_length != len(triple_features):
-                        new_dirty_package_indices.add(dep_feature_resolutions.package_index)
-                if not to_remove:
-                    to_remove = set()
-                to_remove.add(triple)
+                    feature_target_triples = [triple]
+                    if kind == "build":
+                        feature_target_triples = exec_triples
 
-            if to_remove:
-                if len(to_remove) == len(match):
-                    dep["bazel_target"] = None
-                else:
-                    match.difference_update(to_remove)
+                    for feature_triple in feature_target_triples:
+                        triple_features = dep_feature_resolutions.features_enabled[feature_triple]
+                        prev_length = len(triple_features)
+                        triple_features.update(dep_features)
+                        if prev_length != len(triple_features):
+                            new_dirty_package_indices.add(dep_feature_resolutions.package_index)
 
         if package_changed:
             new_dirty_package_indices.add(index)
@@ -122,6 +129,8 @@ def _propagate_feature_enablement(
         features_enabled,
         feature_resolutions,
         cfg_attrs_by_triple,
+        package_normal_reachable_triples,
+        exec_triples,
         debug):
     possible_features = feature_resolutions.possible_features
 
@@ -155,14 +164,23 @@ def _propagate_feature_enablement(
                 found = False
                 for dep in feature_resolutions.possible_deps:
                     if dep_name == dep["name"] and _dep_target_matches_triple(dep, triple, feature_set, cfg_attrs_by_triple):
+                        if dep.get("kind", "normal") == "normal" and not _is_exec_compatible_triple(triple, cfg_attrs_by_triple):
+                            if triple not in package_normal_reachable_triples:
+                                continue
+
                         found = True
                         dep_optional = dep.get("optional", False)
                         if not optional_marker or not dep_optional or dep_name in feature_set or ("dep:" + dep_name) in feature_set:
                             dep_feature_resolutions = dep["feature_resolutions"]
-                            triple_features = dep_feature_resolutions.features_enabled[triple]
-                            if dep_feature not in triple_features:
-                                triple_features.add(dep_feature)
-                                dirty_package_indices.add(dep_feature_resolutions.package_index)
+                            feature_target_triples = [triple]
+                            if dep.get("kind", "normal") == "build":
+                                feature_target_triples = exec_triples
+
+                            for feature_triple in feature_target_triples:
+                                triple_features = dep_feature_resolutions.features_enabled[feature_triple]
+                                if dep_feature not in triple_features:
+                                    triple_features.add(dep_feature)
+                                    dirty_package_indices.add(dep_feature_resolutions.package_index)
                         break
 
                 # Only optional deps need to be explicitly enabled when a subfeature is toggled.
@@ -177,13 +195,13 @@ def _propagate_feature_enablement(
 
 _MAX_ROUNDS = 50
 
-def resolve(mctx, packages, feature_resolutions_by_fq_crate, cfg_attrs_by_triple, debug):
+def resolve(mctx, packages, feature_resolutions_by_fq_crate, cfg_attrs_by_triple, normal_reachable_triples_by_package_index, exec_triples, debug):
     # Do some rounds of mutual resolution; bail when no more changes
     dirty_package_indices = range(len(packages))
     for i in range(_MAX_ROUNDS):
         mctx.report_progress("Running round %s of dependency/feature resolution" % i)
 
-        dirty_package_indices = _resolve_one_round(packages, dirty_package_indices, cfg_attrs_by_triple, debug)
+        dirty_package_indices = _resolve_one_round(packages, dirty_package_indices, cfg_attrs_by_triple, normal_reachable_triples_by_package_index, exec_triples, debug)
         if not dirty_package_indices:
             if debug:
                 count = _count(feature_resolutions_by_fq_crate)
