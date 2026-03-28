@@ -793,7 +793,11 @@ def _generate_hub_and_spokes(
         debug,
     )
 
-    # Validate that we aren't trying to enable any `dep:foo` features that were not even in the lockfile.
+    # Strip `dep:foo` features that reference optional dependencies absent from
+    # the lockfile. These arise when the feature resolver enables features via
+    # cross-platform unification that Cargo never activated (e.g., ESP-specific
+    # features bleeding into an RP2040 build). Since the dependency doesn't
+    # exist in the lockfile, we can safely remove the feature.
     for package in packages:
         feature_resolutions = package["feature_resolutions"]
         features_enabled = feature_resolutions.features_enabled
@@ -806,7 +810,7 @@ def _generate_hub_and_spokes(
 
             for triple in platform_triples:
                 if prefixed_dep_alias in features_enabled[triple]:
-                    fail("Crate %s has enabled %s but it was not in the lockfile..." % (package["name"], prefixed_dep_alias))
+                    features_enabled[triple].discard(prefixed_dep_alias)
 
     mctx.report_progress("Initializing spokes")
 
