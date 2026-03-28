@@ -160,6 +160,24 @@ def _family_for_os(os_name):
         return "unix"
     return ""
 
+def _normalize_arch(arch):
+    """Normalize triple arch component to match rustc's target_arch value."""
+    # Thumb variants are all ARM architecture
+    if arch.startswith("thumb"):
+        return "arm"
+    # RISC-V: riscv32imc -> riscv32, riscv64gc -> riscv64
+    if arch.startswith("riscv32"):
+        return "riscv32"
+    if arch.startswith("riscv64"):
+        return "riscv64"
+    # i686, i586, i386 -> x86
+    if arch in ("i686", "i586", "i386"):
+        return "x86"
+    # armv7, armv6 -> arm
+    if arch.startswith("armv") or arch == "armebv7r":
+        return "arm"
+    return arch
+
 def _pointer_width_for_arch(arch):
     # Common targets
     arch64 = ["s390x","bpfel","bpfeb"]
@@ -221,16 +239,17 @@ def triple_to_cfg_attrs(triple):
         os_raw_part = _get(parts, 2, "none")
         env_part = "-".join(parts[3:])
 
+    arch_norm = _normalize_arch(arch_part)
     os_norm = _normalize_os(os_raw_part)
     fam = _family_for_os(os_norm)
-    width = _pointer_width_for_arch(arch_part)
-    endian = _endian_for_arch(arch_part)
+    width = _pointer_width_for_arch(arch_norm)
+    endian = _endian_for_arch(arch_norm)
     abi_guess = _abi_from_env(env_part)
 
     return {
         "_triple": triple,
 
-        "target_arch": arch_part,
+        "target_arch": arch_norm,
         "target_vendor": vendor_part,
         "target_os": os_norm,
         "target_env": env_part,
