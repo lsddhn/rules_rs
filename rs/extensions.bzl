@@ -701,6 +701,15 @@ def _generate_hub_and_spokes(
         package_normal_reachable_triples = normal_reachable_triples_by_package_index.get(package_feature_resolutions.package_index, set())
 
         for dep in package["dependencies"]:
+            # Skip optional deps during initial feature seeding. Optional deps
+            # should only contribute features when their enabling feature is
+            # explicitly activated through the feature resolution chain. Without
+            # this, workspace members with many optional deps (e.g., ariel-os
+            # with optional ariel-os-sensors) leak features from all optional
+            # deps into the shared feature set.
+            if dep.get("optional"):
+                continue
+
             source = dep["source"]
             dep_name = dep["name"]
             dep_fq = fq_deps.get(dep_name)
@@ -1114,7 +1123,10 @@ RESOLVED_PLATFORMS = select({{
         for dep in package["dependencies"]:
             bazel_target = dep.get("bazel_target")
             if not bazel_target:
-                bazel_target = "//" + paths.join(workspace_package, _normalize_path(dep["path"]).removeprefix(repo_root + "/"))
+                dep_path = dep.get("path")
+                if not dep_path:
+                    continue
+                bazel_target = "//" + paths.join(workspace_package, _normalize_path(dep_path).removeprefix(repo_root + "/"))
 
             if dep.get("rename"):
                 aliases[bazel_target] = dep["rename"].replace("-", "_")
