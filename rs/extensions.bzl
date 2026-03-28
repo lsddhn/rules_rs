@@ -769,8 +769,7 @@ def _generate_hub_and_spokes(
             if not dep_fq:
                 continue
 
-            if not is_first_party_dep:
-                dep["bazel_target"] = "@%s//:%s" % (hub_name, dep_fq)
+            dep["bazel_target"] = "@%s//:%s" % (hub_name, dep_fq)
 
             feature_resolutions = feature_resolutions_by_fq_crate[dep_fq]
 
