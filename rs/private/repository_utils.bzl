@@ -91,7 +91,9 @@ def generate_build_file(rctx, cargo_toml):
     crate_root = (lib.get("path") or "src/lib.rs").removeprefix("./")
 
     edition = package.get("edition", "2015")
-    crate_name = lib.get("name")
+    if type(edition) == "dict":
+        edition = getattr(rctx.attr, "workspace_edition", None) or "2021"
+    crate_name = lib.get("name") or name.replace("-", "_")
     links = package.get("links")
 
     build_content = \

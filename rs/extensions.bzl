@@ -930,9 +930,11 @@ crate.annotation(
             if dry_run:
                 continue
 
+            workspace_edition = workspace_cargo_toml_json.get("workspace", {}).get("package", {}).get("edition")
             local_crate_repository(
                 name = repo_name,
                 path = package["local_path"],
+                workspace_edition = workspace_edition or "",
                 **kwargs
             )
         elif source.startswith("git+"):
