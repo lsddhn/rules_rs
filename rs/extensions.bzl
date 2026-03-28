@@ -792,27 +792,6 @@ def _generate_hub_and_spokes(
 
     _date(mctx, "set up initial deps!")
 
-    # Apply crate_features_select annotations before resolution so that
-    # optional dep gating respects per-platform feature overrides.
-    # Without this, the resolver uses Cargo-unified features and includes
-    # optional deps for all triples even when features are platform-gated.
-    for package in packages:
-        crate_name = package["name"]
-        version = package["version"]
-        annotation = annotation_for(annotations, crate_name, version)
-        if not annotation.crate_features_select:
-            continue
-        fq = _fq_crate(crate_name, version)
-        fr = feature_resolutions_by_fq_crate.get(fq)
-        if not fr:
-            continue
-        for triple in platform_triples:
-            select_features = annotation.crate_features_select.get(triple)
-            if select_features != None:
-                fr.features_enabled[triple].clear()
-                fr.features_enabled[triple].update(annotation.crate_features)
-                fr.features_enabled[triple].update(select_features)
-
     resolve(
         mctx,
         resolver_packages,
@@ -841,6 +820,55 @@ def _generate_hub_and_spokes(
             for triple in platform_triples:
                 if prefixed_dep_alias in features_enabled[triple]:
                     features_enabled[triple].discard(prefixed_dep_alias)
+
+    # Apply crate_features_select annotations post-resolve: override features
+    # and remove optional deps whose enabling feature is not active per triple.
+    # Only applies when ALL platform triples have entries (full override).
+    # Partial entries (e.g., chip features for specific triples) are additive.
+    for package in packages:
+        crate_name = package["name"]
+        version = package["version"]
+        annotation = annotation_for(annotations, crate_name, version)
+        if not annotation.crate_features_select:
+            continue
+        is_full_override = len([t for t in platform_triples if t in annotation.crate_features_select]) == len(platform_triples)
+        if not is_full_override:
+            continue
+        fq = _fq_crate(crate_name, version)
+        fr = feature_resolutions_by_fq_crate.get(fq)
+        if not fr:
+            continue
+        for triple in platform_triples:
+            select_features = annotation.crate_features_select.get(triple, [])
+            expanded = set(annotation.crate_features + list(select_features))
+            for _ in range(10):
+                prev_len = len(expanded)
+                for feat in list(expanded):
+                    for implication in fr.possible_features.get(feat, []):
+                        expanded.add(implication)
+                if len(expanded) == prev_len:
+                    break
+            fr.features_enabled[triple].clear()
+            fr.features_enabled[triple].update(expanded)
+            enabled_optional_deps = set()
+            for feat in expanded:
+                if feat.startswith("dep:"):
+                    enabled_optional_deps.add(feat[4:])
+            enabled_optional_deps.update(expanded)
+            keep_targets = set()
+            for dep in fr.possible_deps:
+                bazel_target = dep.get("bazel_target")
+                if not bazel_target or bazel_target not in fr.deps[triple]:
+                    continue
+                if not dep.get("optional"):
+                    keep_targets.add(bazel_target)
+                else:
+                    dep_name = dep.get("rename") or dep["name"]
+                    dep_package = dep.get("package") or dep_name
+                    if dep_name in enabled_optional_deps or dep_package in enabled_optional_deps:
+                        keep_targets.add(bazel_target)
+            fr.deps[triple].clear()
+            fr.deps[triple].update(keep_targets)
 
     mctx.report_progress("Initializing spokes")
 
