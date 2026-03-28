@@ -792,6 +792,27 @@ def _generate_hub_and_spokes(
 
     _date(mctx, "set up initial deps!")
 
+    # Apply crate_features_select annotations before resolution so that
+    # optional dep gating respects per-platform feature overrides.
+    # Without this, the resolver uses Cargo-unified features and includes
+    # optional deps for all triples even when features are platform-gated.
+    for package in packages:
+        crate_name = package["name"]
+        version = package["version"]
+        annotation = annotation_for(annotations, crate_name, version)
+        if not annotation.crate_features_select:
+            continue
+        fq = _fq_crate(crate_name, version)
+        fr = feature_resolutions_by_fq_crate.get(fq)
+        if not fr:
+            continue
+        for triple in platform_triples:
+            select_features = annotation.crate_features_select.get(triple)
+            if select_features != None:
+                fr.features_enabled[triple].clear()
+                fr.features_enabled[triple].update(annotation.crate_features)
+                fr.features_enabled[triple].update(select_features)
+
     resolve(
         mctx,
         resolver_packages,
