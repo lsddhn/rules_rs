@@ -417,6 +417,16 @@ def _generate_hub_and_spokes(
 
             patch_paths_by_name[name] = rel_patch_path
 
+    # Build manifest_path lookup from cargo metadata for workspace members.
+    workspace_manifest_paths = {}
+    for ws_pkg in cargo_metadata["packages"]:
+        ws_key = (ws_pkg["name"], ws_pkg["version"])
+        if ws_key in workspace_member_keys:
+            manifest_path = ws_pkg.get("manifest_path", "")
+            if manifest_path:
+                manifest_dir = manifest_path.removesuffix("/Cargo.toml").removesuffix("\\Cargo.toml")
+                workspace_manifest_paths[ws_key] = manifest_dir
+
     workspace_members = []
     packages = []
 
@@ -430,6 +440,15 @@ def _generate_hub_and_spokes(
         key = (pkg["name"], pkg["version"])
         if key in workspace_member_keys:
             workspace_members.append(pkg)
+            # Also generate BUILD targets for workspace members by treating
+            # them as path dependencies. Use manifest_path from cargo metadata
+            # to locate the source directory.
+            manifest_dir = workspace_manifest_paths.get(key)
+            if manifest_dir:
+                rel_path = _relative_to_workspace(manifest_dir, workspace_root)
+                pkg["source"] = "path+" + hub_name + "/" + rel_path
+                pkg["local_path"] = manifest_dir
+                packages.append(pkg)
             continue
 
         rel_path = patch_paths_by_name.get(pkg["name"]) or dep_paths_by_name.get(pkg["name"])
@@ -519,16 +538,16 @@ def _generate_hub_and_spokes(
                 cargo_toml_json = run_toml2json(mctx, paths.join(package["local_path"], "Cargo.toml"))
 
                 dependencies = [
-                    _spec_to_dep_dict(dep, spec, annotation, {})
+                    _spec_to_dep_dict(dep, spec, annotation, workspace_cargo_toml_json)
                     for dep, spec in cargo_toml_json.get("dependencies", {}).items()
                 ] + [
-                    _spec_to_dep_dict(dep, spec, annotation, {}, is_build = True)
+                    _spec_to_dep_dict(dep, spec, annotation, workspace_cargo_toml_json, is_build = True)
                     for dep, spec in cargo_toml_json.get("build-dependencies", {}).items()
                 ]
 
                 for target, value in cargo_toml_json.get("target", {}).items():
                     for dep, spec in value.get("dependencies", {}).items():
-                        converted = _spec_to_dep_dict(dep, spec, annotation, {})
+                        converted = _spec_to_dep_dict(dep, spec, annotation, workspace_cargo_toml_json)
                         converted["target"] = target
                         dependencies.append(converted)
 
