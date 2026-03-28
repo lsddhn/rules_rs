@@ -65,5 +65,6 @@ local_crate_repository = repository_rule(
     implementation = _local_crate_repository_impl,
     attrs = {
         "path": attr.string(mandatory = True),
+        "workspace_edition": attr.string(mandatory = False),
     } | common_attrs,
 )
