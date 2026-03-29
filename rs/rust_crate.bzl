@@ -5,6 +5,10 @@ load("//rs:rust_library.bzl", "rust_library")
 load("//rs:rust_proc_macro.bzl", "rust_proc_macro")
 
 def _platform(triple, use_experimental_platforms):
+    if triple.startswith("@@") or triple.startswith("@") and not triple.startswith("@rules"):
+        return triple
+    if triple.startswith("//"):
+        return "@@" + triple
     if use_experimental_platforms:
         return "@rules_rs//rs/experimental/platforms/config:" + triple
     return "@rules_rust//rust/platform:" + triple.replace("-musl", "-gnu").replace("-gnullvm", "-msvc")
@@ -139,7 +143,10 @@ def rust_crate(
         deps = deps,
         data = data,
         crate_features = crate_features + select(
-            {_platform(k, use_experimental_platforms): v for k, v in conditional_crate_features.items()} |
+            {_platform(k, use_experimental_platforms): v for k, v in conditional_crate_features.items() if not (k.startswith("//") or k.startswith("@"))} |
+            {"//conditions:default": []},
+        ) + select(
+            {_platform(k, use_experimental_platforms): v for k, v in conditional_crate_features.items() if k.startswith("//") or k.startswith("@")} |
             {"//conditions:default": []},
         ),
         crate_root = crate_root,

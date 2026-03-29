@@ -2,6 +2,12 @@ load(":semver.bzl", "parse_full_version")
 load(":select_utils.bzl", "compute_select")
 
 def _platform(triple, use_experimental_platforms):
+    # Pass through keys that are already Bazel labels (config_settings from bool_flags etc.)
+    # Prefix // with @@ to make it main-repo-relative when rendered in external repo BUILD files.
+    if triple.startswith("@@") or triple.startswith("@") and not triple.startswith("@rules"):
+        return triple
+    if triple.startswith("//"):
+        return "@@" + triple
     if use_experimental_platforms:
         return "@rules_rs//rs/experimental/platforms/config:" + triple
     return "@rules_rust//rust/platform:" + triple.replace("-musl", "-gnu").replace("-gnullvm", "-msvc")
@@ -13,16 +19,30 @@ def _format_branches(branches):
         ",\n        ".join(['"%s": %s' % branch for branch in branches])
     )
 
+def _is_label_key(k):
+    return k.startswith("//") or k.startswith("@")
+
 def render_select(non_platform_items, platform_items, use_experimental_platforms):
-    common_items, branches = compute_select(non_platform_items, platform_items)
+    # Split label keys (config_settings) from triple keys to avoid ambiguous
+    # select() matches when both a platform and a config_setting match.
+    triple_items = {k: v for k, v in platform_items.items() if not _is_label_key(k)}
+    label_items = {k: v for k, v in platform_items.items() if _is_label_key(k)}
 
-    if not branches:
-        return common_items, ""
+    common_items, branches = compute_select(non_platform_items, triple_items)
 
-    branches = [(_platform(k, use_experimental_platforms), repr(v)) for k, v in branches.items()]
-    branches.append(("//conditions:default", "[],"))
+    result = ""
+    if branches:
+        rendered = [(_platform(k, use_experimental_platforms), repr(v)) for k, v in branches.items()]
+        rendered.append(("//conditions:default", "[],"))
+        result = _format_branches(rendered)
 
-    return common_items, _format_branches(branches)
+    if label_items:
+        label_branches = [(_platform(k, use_experimental_platforms), repr(v)) for k, v in label_items.items()]
+        label_branches.append(("//conditions:default", "[],"))
+        label_select = _format_branches(label_branches)
+        result = (result + " + " + label_select) if result else label_select
+
+    return common_items, result
 
 def render_select_build_script_env(platform_items, use_experimental_platforms):
     branches = [
@@ -173,7 +193,7 @@ rust_crate(
         conditional_deps = " + " + conditional_deps if conditional_deps else "",
         data = ",\n        ".join(['"%s"' % d for d in attr.data]),
         crate_features = repr(sorted(crate_features)),
-        triples = repr(attr.crate_features_select.keys()),
+        triples = repr([k for k in attr.crate_features_select.keys() if not k.startswith("//") and not k.startswith("@")]),
         conditional_crate_features = repr(conditional_crate_features),
         crate_root = repr(crate_root),
         edition = repr(edition),

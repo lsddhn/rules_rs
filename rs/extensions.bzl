@@ -33,6 +33,16 @@ def _platform(triple, use_experimental_platforms):
 def _select(items):
     return {k: sorted(v) for k, v in items.items()}
 
+def _merge_label_overrides(base_dict, overrides, field):
+    """Merge label-keyed (config_setting) overrides into a triple-keyed select dict."""
+    if not overrides:
+        return base_dict
+    result = dict(base_dict)
+    entries = getattr(overrides, field, {})
+    for label, values in entries.items():
+        result[label] = values
+    return result
+
 def _exclude_deps_from_features(features):
     return [f for f in features if not f.startswith("dep:")]
 
@@ -821,54 +831,108 @@ def _generate_hub_and_spokes(
                 if prefixed_dep_alias in features_enabled[triple]:
                     features_enabled[triple].discard(prefixed_dep_alias)
 
-    # Apply crate_features_select annotations post-resolve: override features
-    # and remove optional deps whose enabling feature is not active per triple.
-    # Only applies when ALL platform triples have entries (full override).
-    # Partial entries (e.g., chip features for specific triples) are additive.
+    # Apply crate_features_select annotations post-resolve.
+    # Keys can be platform triples OR Bazel config_setting labels.
+    #
+    # Triple keys: override resolved features + dep gating per platform.
+    #   Only activates as full override when ALL triples have entries.
+    #
+    # Label keys (start with // or @): passed through to generated BUILD's
+    #   select() for features and deps. Enables bool_flag-based feature
+    #   toggling on external crates (e.g., --//features:usb=true).
+
+    # Per-package dict of label-keyed overrides to merge into kwargs later.
+    # {fq_crate: {"features": {label: [features]}, "deps": {label: [dep_targets]}}}
+    label_keyed_overrides = {}
+
     for package in packages:
         crate_name = package["name"]
         version = package["version"]
         annotation = annotation_for(annotations, crate_name, version)
         if not annotation.crate_features_select:
             continue
-        is_full_override = len([t for t in platform_triples if t in annotation.crate_features_select]) == len(platform_triples)
-        if not is_full_override:
-            continue
         fq = _fq_crate(crate_name, version)
         fr = feature_resolutions_by_fq_crate.get(fq)
         if not fr:
             continue
-        for triple in platform_triples:
-            select_features = annotation.crate_features_select.get(triple, [])
-            expanded = set(annotation.crate_features + list(select_features))
-            for _ in range(10):
-                prev_len = len(expanded)
-                for feat in list(expanded):
-                    for implication in fr.possible_features.get(feat, []):
-                        expanded.add(implication)
-                if len(expanded) == prev_len:
-                    break
-            fr.features_enabled[triple].clear()
-            fr.features_enabled[triple].update(expanded)
-            enabled_optional_deps = set()
-            for feat in expanded:
-                if feat.startswith("dep:"):
-                    enabled_optional_deps.add(feat[4:])
-            enabled_optional_deps.update(expanded)
-            keep_targets = set()
-            for dep in fr.possible_deps:
-                bazel_target = dep.get("bazel_target")
-                if not bazel_target or bazel_target not in fr.deps[triple]:
-                    continue
-                if not dep.get("optional"):
-                    keep_targets.add(bazel_target)
-                else:
+
+        # Separate triple keys from label keys.
+        triple_keys = {k: v for k, v in annotation.crate_features_select.items() if not k.startswith("//") and not k.startswith("@")}
+        label_keys = {k: v for k, v in annotation.crate_features_select.items() if k.startswith("//") or k.startswith("@")}
+
+        # --- Process triple keys (existing logic) ---
+        is_full_override = len([t for t in platform_triples if t in triple_keys]) == len(platform_triples)
+        if is_full_override:
+            for triple in platform_triples:
+                select_features = triple_keys.get(triple, [])
+                expanded = set(annotation.crate_features + list(select_features))
+                for _ in range(10):
+                    prev_len = len(expanded)
+                    for feat in list(expanded):
+                        for implication in fr.possible_features.get(feat, []):
+                            expanded.add(implication)
+                    if len(expanded) == prev_len:
+                        break
+                fr.features_enabled[triple].clear()
+                fr.features_enabled[triple].update(expanded)
+                enabled_optional_deps = set()
+                for feat in expanded:
+                    if feat.startswith("dep:"):
+                        enabled_optional_deps.add(feat[4:])
+                    elif "/" in feat:
+                        enabled_optional_deps.add(feat.split("/")[0])
+                enabled_optional_deps.update(expanded)
+                keep_targets = set()
+                for dep in fr.possible_deps:
+                    bazel_target = dep.get("bazel_target")
+                    if not bazel_target or bazel_target not in fr.deps[triple]:
+                        continue
+                    if not dep.get("optional"):
+                        keep_targets.add(bazel_target)
+                    else:
+                        dep_name = dep.get("rename") or dep["name"]
+                        dep_package = dep.get("package") or dep_name
+                        if dep_name in enabled_optional_deps or dep_package in enabled_optional_deps:
+                            keep_targets.add(bazel_target)
+                fr.deps[triple].clear()
+                fr.deps[triple].update(keep_targets)
+
+        # --- Process label keys (new: config_setting-based features) ---
+        if label_keys:
+            label_features = {}
+            label_deps = {}
+            for label, features in label_keys.items():
+                expanded = set(annotation.crate_features + list(features))
+                for _ in range(10):
+                    prev_len = len(expanded)
+                    for feat in list(expanded):
+                        for implication in fr.possible_features.get(feat, []):
+                            expanded.add(implication)
+                    if len(expanded) == prev_len:
+                        break
+                label_features[label] = sorted([f for f in expanded if not f.startswith("dep:")])
+                enabled_optional_deps = set()
+                for feat in expanded:
+                    if feat.startswith("dep:"):
+                        enabled_optional_deps.add(feat[4:])
+                    elif "/" in feat:
+                        enabled_optional_deps.add(feat.split("/")[0])
+                enabled_optional_deps.update(expanded)
+                dep_targets = []
+                for dep in fr.possible_deps:
+                    bazel_target = dep.get("bazel_target")
+                    if not bazel_target or not dep.get("optional"):
+                        continue
                     dep_name = dep.get("rename") or dep["name"]
                     dep_package = dep.get("package") or dep_name
                     if dep_name in enabled_optional_deps or dep_package in enabled_optional_deps:
-                        keep_targets.add(bazel_target)
-            fr.deps[triple].clear()
-            fr.deps[triple].update(keep_targets)
+                        dep_targets.append(bazel_target)
+                if dep_targets:
+                    label_deps[label] = sorted(dep_targets)
+            label_keyed_overrides[fq] = struct(
+                features = label_features,
+                deps = label_deps,
+            )
 
     mctx.report_progress("Initializing spokes")
 
@@ -928,11 +992,19 @@ crate.annotation(
             data = annotation.data,
             deps = annotation.deps,
             crate_tags = annotation.tags,
-            deps_select = _select(feature_resolutions.deps),
+            deps_select = _merge_label_overrides(
+                _select(feature_resolutions.deps),
+                label_keyed_overrides.get(_fq_crate(crate_name, version)),
+                "deps",
+            ),
             aliases = feature_resolutions.aliases,
             gen_binaries = annotation.gen_binaries,
             crate_features = annotation.crate_features,
-            crate_features_select = _select(feature_resolutions.features_enabled),
+            crate_features_select = _merge_label_overrides(
+                _select(feature_resolutions.features_enabled),
+                label_keyed_overrides.get(_fq_crate(crate_name, version)),
+                "features",
+            ),
             patch_args = annotation.patch_args,
             patch_tool = annotation.patch_tool,
             patches = annotation.patches,
