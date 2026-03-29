@@ -1,3 +1,56 @@
+## Embedded Support (`add-embedded-support` branch)
+
+This branch adds bare-metal embedded Rust support to rules_rs, solving several longstanding limitations of Cargo's feature model that are critical for memory-constrained embedded targets.
+
+### Fixes
+
+#### 1. Bare-metal triple parsing ([#1](https://github.com/lsddhn/rules_rs/issues/1))
+3-part triples like `thumbv6m-none-eabi` were mis-parsed — `target_os` reported as `eabi` instead of `none`, `target_arch` as `thumbv6m` instead of `arm`.
+- `202dfd2` — cfg_parser fix + `_normalize_arch()`
+- `0ca5ae6` — Normalize target_arch and pointer_width for thumb/riscv/armv triples
+
+#### 2. Build-dep feature bleed into bare-metal ([#2](https://github.com/lsddhn/rules_rs/issues/2))
+Build-dependency features (e.g., `lalrpop` → `itertools` → `either/use_std`) leaked into bare-metal targets, causing `std`-dependent code to compile for `no_std`.
+- `75e8426` — Route build-dep feature propagation to exec-compatible triples only
+
+#### 3. `dep:` features for absent optional deps ([#3](https://github.com/lsddhn/rules_rs/issues/3))
+`dep:foo` features referencing optional deps not in Cargo.lock caused hard `fail()`.
+- `ada9ce7` — Silently discard `dep:foo` when the optional dep doesn't exist in the lockfile
+
+#### 4. Optional deps leak during feature seeding
+Optional deps contributed features during initial seeding even when their enabling feature wasn't activated.
+- `ecb9d57` — Skip optional deps during initial feature seeding
+
+#### 5. Per-platform mutually exclusive features (Cargo unification workaround)
+Cargo's feature unification forces one feature set per crate across the entire workspace. For embedded, this means `embedded-test/std` and `embedded-test/semihosting` (mutually exclusive) can't coexist. `crate_features_select` with `crate_features = []` overrides the unified features per platform, and post-resolve dep gating correctly excludes platform-incompatible optional deps.
+- `d3903f4` — Post-resolve `crate_features_select` override with dep gating
+- `0cbc42d` — Pre-resolve attempt (superseded by `d3903f4`)
+
+#### 6. Per-build feature toggling on external crates ([#5](https://github.com/lsddhn/rules_rs/issues/5))
+`crate_features_select` now accepts Bazel `config_setting` labels alongside platform triples. This enables `bool_flag`-based feature toggling on external crates — the same crate compiles with different Cargo features per build invocation, even on the same platform.
+- `20be799` — Label-keyed `crate_features_select` with split select rendering, feature expansion, and dep gating
+
+```python
+crate.annotation(
+    crate = "embassy-rp",
+    crate_features_select = {
+        "thumbv6m-none-eabi": ["rp2040"],                    # per platform (existing)
+        "//features:usb_enabled": ["usb"],                   # per build flag (new)
+    },
+)
+```
+
+```bash
+bazel build --config=rp2040 --//features:usb=true //app:firmware   # with USB
+bazel build --config=rp2040 //app:firmware                          # without USB
+```
+
+### Why this matters for embedded
+
+Cargo's feature unification was designed for server Rust where binary size is irrelevant. For embedded targets with 2MB flash and 256KB RAM, every unnecessary feature is wasted memory. Bazel's configuration system (`select()` on platforms, `config_setting`s, `bool_flag`s) is fundamentally better suited, but rules_rs didn't wire it up. Now it does.
+
+---
+
 ## Overview
 
 `rules_rs` is both a wrapper around [rules_rust](https://github.com/bazelbuild/rules_rust) and an alternative implementation for selected parts of the Rust + Bazel stack.
