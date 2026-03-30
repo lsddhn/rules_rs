@@ -15,9 +15,16 @@ _patch = tag_class(
     },
 )
 
+_BUILTIN_PATCHES = [
+    # bootstrap_process_wrapper links libstdc++ dynamically with no rpath.
+    # Nix dev shells strip LD_LIBRARY_PATH in the sandbox, causing link
+    # failures. Static linking eliminates the runtime dependency.
+    Label("//rs/experimental/patches:bootstrap-linkstatic.patch"),
+]
+
 def _rules_rust_impl(mctx):
-    patches = []
-    strip_values = set()
+    patches = list(_BUILTIN_PATCHES)
+    strip_values = set([1])  # builtin patches use -p1
 
     for mod in mctx.modules:
         for tag in mod.tags.patch:
@@ -27,7 +34,7 @@ def _rules_rust_impl(mctx):
     if len(strip_values) > 1:
         fail("Found conflicting strip values in rules_rust.patch tags")
 
-    strip = list(strip_values)[0] if strip_values else 0
+    strip = list(strip_values)[0] if strip_values else 1
 
     http_archive(
         name = "rules_rust",

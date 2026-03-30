@@ -1,0 +1,13 @@
+--- a/util/process_wrapper/private/BUILD.bazel
++++ b/util/process_wrapper/private/BUILD.bazel
+@@ -3,5 +3,10 @@
+ cc_binary(
+     name = "bootstrap_process_wrapper",
+     srcs = ["bootstrap_process_wrapper.cc"],
++    features = ["-default_link_libs"],
++    linkopts = select({
++        "@platforms//os:linux": ["-Wl,-Bstatic", "-lstdc++", "-lgcc", "-Wl,-Bdynamic"],
++        "//conditions:default": [],
++    }),
+     visibility = ["//util/process_wrapper:__pkg__"],
+ )
